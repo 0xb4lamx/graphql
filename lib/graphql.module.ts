@@ -20,7 +20,7 @@ import {
   GqlOptionsFactory,
 } from './interfaces';
 import { DelegatesExplorerService, ResolversExplorerService, ScalarsExplorerService } from './services';
-import { generateString, mergeDefaults, extend } from './utils';
+import { generateString, mergeDefaults, extend, normalizeRoutePath } from './utils';
 
 @Module({
   providers: [
