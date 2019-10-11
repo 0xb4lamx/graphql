@@ -17,5 +17,5 @@ npm-debug.log
 test-schema.graphql
 *.test-definitions.ts
 
-# dist
-/dist
+# dist // gonna add the dist to be able to find it when we use npm install
+#/dist  
