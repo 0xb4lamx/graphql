@@ -2,7 +2,7 @@ import { DynamicModule, Inject, Module, OnModuleInit, Optional, Provider } from 
 import { ApolloServer } from 'apollo-server-express';
 import { MetadataScanner } from '@nestjs/core/metadata-scanner';
 import { loadPackage } from '@nestjs/common/utils/load-package.util';
-import { HttpAdapterHost } from '@nestjs/core';
+import { HttpAdapterHost, ApplicationConfig } from '@nestjs/core';
 
 import { GraphQLFederationFactory } from './graphql-federation.factory';
 import { ScalarsExplorerService, DelegatesExplorerService, ResolversExplorerService } from './services';
@@ -11,8 +11,9 @@ import { GraphQLTypesLoader } from './graphql-types.loader';
 import { GraphQLSchemaBuilder } from './graphql-schema-builder';
 import { GRAPHQL_MODULE_ID, GRAPHQL_MODULE_OPTIONS } from './graphql.constants';
 import { GqlModuleAsyncOptions, GqlModuleOptions, GqlOptionsFactory } from './interfaces';
-import { generateString, extend, mergeDefaults } from './utils';
+import { generateString, extend, mergeDefaults, normalizeRoutePath } from './utils';
 import { GraphQLFactory } from './graphql.factory';
+import { printSchema } from '@apollo/federation';
 
 @Module({
   providers: [
@@ -39,6 +40,7 @@ export class GraphQLFederationModule implements OnModuleInit {
     private readonly graphqlFederationFactory: GraphQLFederationFactory,
     private readonly graphqlTypesLoader: GraphQLTypesLoader,
     private readonly graphqlFactory: GraphQLFactory,
+    private readonly applicationConfig: ApplicationConfig,
   ) {}
 
   static forRoot(options: GqlModuleOptions = {}): DynamicModule {
@@ -104,24 +106,17 @@ export class GraphQLFederationModule implements OnModuleInit {
   }
 
   async onModuleInit() {
-    if (!this.httpAdapterHost) return;
-    const { httpAdapter } = this.httpAdapterHost;
-
-    if (!httpAdapter) return;
-
-    const { printSchema } = loadPackage('@apollo/federation', 'ApolloFederation');
-
-    const {
-      path,
-      disableHealthCheck,
-      onHealthCheck,
-      cors,
-      bodyParserConfig,
-      typePaths,
-    } = this.options;
-    const app = httpAdapter.getInstance();
-
-    const typeDefs = await this.graphqlTypesLoader.getTypesFromPaths(typePaths);
+    if (!this.httpAdapterHost) {
+      return;
+    }
+    const httpAdapter = this.httpAdapterHost.httpAdapter;
+    if (!httpAdapter) {
+      return;
+    }
+    const typeDefs =
+      (await this.graphqlTypesLoader.mergeTypesByPaths(
+        this.options.typePaths,
+      )) || [];
 
     const mergedTypeDefs = extend(typeDefs, this.options.typeDefs);
     const apolloOptions = await this.graphqlFederationFactory.mergeOptions({
@@ -136,16 +131,7 @@ export class GraphQLFederationModule implements OnModuleInit {
       );
     }
 
-    this.apolloServer = new ApolloServer(apolloOptions as any);
-    this.apolloServer.applyMiddleware({
-      app,
-      path,
-      disableHealthCheck,
-      onHealthCheck,
-      cors,
-      bodyParserConfig,
-    });
-
+    this.registerGqlServer(apolloOptions);
     if (this.options.installSubscriptionHandlers) {
       // TL;DR <https://github.com/apollographql/apollo-server/issues/2776>
       throw new Error('No support for subscriptions yet when using Apollo Federation');
@@ -154,4 +140,86 @@ export class GraphQLFederationModule implements OnModuleInit {
       );*/
     }
   }
+
+  private registerGqlServer(apolloOptions: GqlModuleOptions) {
+    const httpAdapter = this.httpAdapterHost.httpAdapter;
+    const adapterName = httpAdapter.constructor && httpAdapter.constructor.name;
+
+    if (adapterName === 'ExpressAdapter') {
+      this.registerExpress(apolloOptions);
+    } else if (adapterName === 'FastifyAdapter') {
+      this.registerFastify(apolloOptions);
+    } else {
+      throw new Error(`No support for current HttpAdapter: ${adapterName}`);
+    }
+  }
+  private registerExpress(apolloOptions: GqlModuleOptions) {
+    const { ApolloServer } = loadPackage(
+      'apollo-server-express',
+      'GraphQLModule',
+      () => require('apollo-server-express'),
+    );
+    const path = this.getNormalizedPath(apolloOptions);
+    const {
+      disableHealthCheck,
+      onHealthCheck,
+      cors,
+      bodyParserConfig,
+    } = this.options;
+
+    const httpAdapter = this.httpAdapterHost.httpAdapter;
+    const app = httpAdapter.getInstance();
+    const apolloServer = new ApolloServer(apolloOptions as any);
+
+    apolloServer.applyMiddleware({
+      app,
+      path,
+      disableHealthCheck,
+      onHealthCheck,
+      cors,
+      bodyParserConfig,
+    });
+
+    this.apolloServer = apolloServer;
+  }
+  private registerFastify(apolloOptions: GqlModuleOptions) {
+    const { ApolloServer } = loadPackage(
+      'apollo-server-fastify',
+      'GraphQLModule',
+      () => require('apollo-server-fastify'),
+    );
+
+    const httpAdapter = this.httpAdapterHost.httpAdapter;
+    const app = httpAdapter.getInstance();
+    const path = this.getNormalizedPath(apolloOptions);
+
+    const apolloServer = new ApolloServer(apolloOptions as any);
+    const {
+      disableHealthCheck,
+      onHealthCheck,
+      cors,
+      bodyParserConfig,
+    } = this.options;
+    app.register(
+      apolloServer.createHandler({
+        disableHealthCheck,
+        onHealthCheck,
+        cors,
+        bodyParserConfig,
+        path,
+      }),
+    );
+
+    this.apolloServer = apolloServer;
+  }
+
+  private getNormalizedPath(apolloOptions: GqlModuleOptions): string {
+    const prefix = this.applicationConfig.getGlobalPrefix();
+    const useGlobalPrefix = prefix && this.options.useGlobalPrefix;
+    const gqlOptionsPath = normalizeRoutePath(apolloOptions.path);
+    return useGlobalPrefix
+      ? normalizeRoutePath(prefix) + gqlOptionsPath
+      : gqlOptionsPath;
+  }
+
 }

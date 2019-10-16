@@ -3,7 +3,6 @@ var GraphQLFederationModule_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 const tslib_1 = require("tslib");
 const common_1 = require("@nestjs/common");
-const apollo_server_express_1 = require("apollo-server-express");
 const metadata_scanner_1 = require("@nestjs/core/metadata-scanner");
 const load_package_util_1 = require("@nestjs/common/utils/load-package.util");
 const core_1 = require("@nestjs/core");
@@ -15,13 +14,15 @@ const graphql_schema_builder_1 = require("./graphql-schema-builder");
 const graphql_constants_1 = require("./graphql.constants");
 const utils_1 = require("./utils");
 const graphql_factory_1 = require("./graphql.factory");
+const federation_1 = require("@apollo/federation");
 let GraphQLFederationModule = GraphQLFederationModule_1 = class GraphQLFederationModule {
-    constructor(httpAdapterHost, options, graphqlFederationFactory, graphqlTypesLoader, graphqlFactory) {
+    constructor(httpAdapterHost, options, graphqlFederationFactory, graphqlTypesLoader, graphqlFactory, applicationConfig) {
         this.httpAdapterHost = httpAdapterHost;
         this.options = options;
         this.graphqlFederationFactory = graphqlFederationFactory;
         this.graphqlTypesLoader = graphqlTypesLoader;
         this.graphqlFactory = graphqlFactory;
+        this.applicationConfig = applicationConfig;
     }
     static forRoot(options = {}) {
         options = utils_1.mergeDefaults(options);
@@ -76,33 +77,78 @@ let GraphQLFederationModule = GraphQLFederationModule_1 = class GraphQLFederatio
     }
     onModuleInit() {
         return tslib_1.__awaiter(this, void 0, void 0, function* () {
-            if (!this.httpAdapterHost)
+            if (!this.httpAdapterHost) {
                 return;
-            const { httpAdapter } = this.httpAdapterHost;
-            if (!httpAdapter)
+            }
+            const httpAdapter = this.httpAdapterHost.httpAdapter;
+            if (!httpAdapter) {
                 return;
-            const { printSchema } = load_package_util_1.loadPackage('@apollo/federation', 'ApolloFederation');
-            const { path, disableHealthCheck, onHealthCheck, cors, bodyParserConfig, typePaths, } = this.options;
-            const app = httpAdapter.getInstance();
-            const typeDefs = yield this.graphqlTypesLoader.getTypesFromPaths(typePaths);
+            }
+            const typeDefs = (yield this.graphqlTypesLoader.mergeTypesByPaths(this.options.typePaths)) || [];
             const mergedTypeDefs = utils_1.extend(typeDefs, this.options.typeDefs);
             const apolloOptions = yield this.graphqlFederationFactory.mergeOptions(Object.assign(Object.assign({}, this.options), { typeDefs: mergedTypeDefs }));
             if (this.options.definitions && this.options.definitions.path) {
-                yield this.graphqlFactory.generateDefinitions(printSchema(apolloOptions.schema), this.options);
+                yield this.graphqlFactory.generateDefinitions(federation_1.printSchema(apolloOptions.schema), this.options);
             }
-            this.apolloServer = new apollo_server_express_1.ApolloServer(apolloOptions);
-            this.apolloServer.applyMiddleware({
-                app,
-                path,
-                disableHealthCheck,
-                onHealthCheck,
-                cors,
-                bodyParserConfig,
-            });
+            this.registerGqlServer(apolloOptions);
             if (this.options.installSubscriptionHandlers) {
                 throw new Error('No support for subscriptions yet when using Apollo Federation');
             }
         });
+    }
+    registerGqlServer(apolloOptions) {
+        const httpAdapter = this.httpAdapterHost.httpAdapter;
+        const adapterName = httpAdapter.constructor && httpAdapter.constructor.name;
+        if (adapterName === 'ExpressAdapter') {
+            this.registerExpress(apolloOptions);
+        }
+        else if (adapterName === 'FastifyAdapter') {
+            this.registerFastify(apolloOptions);
+        }
+        else {
+            throw new Error(`No support for current HttpAdapter: ${adapterName}`);
+        }
+    }
+    registerExpress(apolloOptions) {
+        const { ApolloServer } = load_package_util_1.loadPackage('apollo-server-express', 'GraphQLModule', () => require('apollo-server-express'));
+        const path = this.getNormalizedPath(apolloOptions);
+        const { disableHealthCheck, onHealthCheck, cors, bodyParserConfig, } = this.options;
+        const httpAdapter = this.httpAdapterHost.httpAdapter;
+        const app = httpAdapter.getInstance();
+        const apolloServer = new ApolloServer(apolloOptions);
+        apolloServer.applyMiddleware({
+            app,
+            path,
+            disableHealthCheck,
+            onHealthCheck,
+            cors,
+            bodyParserConfig,
+        });
+        this.apolloServer = apolloServer;
+    }
+    registerFastify(apolloOptions) {
+        const { ApolloServer } = load_package_util_1.loadPackage('apollo-server-fastify', 'GraphQLModule', () => require('apollo-server-fastify'));
+        const httpAdapter = this.httpAdapterHost.httpAdapter;
+        const app = httpAdapter.getInstance();
+        const path = this.getNormalizedPath(apolloOptions);
+        const apolloServer = new ApolloServer(apolloOptions);
+        const { disableHealthCheck, onHealthCheck, cors, bodyParserConfig, } = this.options;
+        app.register(apolloServer.createHandler({
+            disableHealthCheck,
+            onHealthCheck,
+            cors,
+            bodyParserConfig,
+            path,
+        }));
+        this.apolloServer = apolloServer;
+    }
+    getNormalizedPath(apolloOptions) {
+        const prefix = this.applicationConfig.getGlobalPrefix();
+        const useGlobalPrefix = prefix && this.options.useGlobalPrefix;
+        const gqlOptionsPath = utils_1.normalizeRoutePath(apolloOptions.path);
+        return useGlobalPrefix
+            ? utils_1.normalizeRoutePath(prefix) + gqlOptionsPath
+            : gqlOptionsPath;
     }
 };
 GraphQLFederationModule = GraphQLFederationModule_1 = tslib_1.__decorate([
@@ -124,6 +170,7 @@ GraphQLFederationModule = GraphQLFederationModule_1 = tslib_1.__decorate([
     tslib_1.__param(1, common_1.Inject(graphql_constants_1.GRAPHQL_MODULE_OPTIONS)),
     tslib_1.__metadata("design:paramtypes", [core_1.HttpAdapterHost, Object, graphql_federation_factory_1.GraphQLFederationFactory,
         graphql_types_loader_1.GraphQLTypesLoader,
-        graphql_factory_1.GraphQLFactory])
+        graphql_factory_1.GraphQLFactory,
+        core_1.ApplicationConfig])
 ], GraphQLFederationModule);
 exports.GraphQLFederationModule = GraphQLFederationModule;

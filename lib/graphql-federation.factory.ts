@@ -5,6 +5,7 @@ import { loadPackage } from '@nestjs/common/utils/load-package.util';
 import { extend } from './utils';
 import { ScalarsExplorerService, DelegatesExplorerService, ResolversExplorerService } from './services';
 import { GqlModuleOptions } from './interfaces';
+import { buildFederatedSchema } from '@apollo/federation';
 
 @Injectable()
 export class GraphQLFederationFactory {
@@ -19,7 +20,6 @@ export class GraphQLFederationFactory {
   }
 
   async mergeOptions(options: GqlModuleOptions = {}): Promise<GqlModuleOptions> {
-    const { buildFederatedSchema } = loadPackage('@apollo/federation', 'ApolloFederation');
 
     const resolvers = this.extendResolvers([
       this.resolversExplorerService.explore(),

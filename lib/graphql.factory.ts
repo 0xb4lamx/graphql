@@ -14,6 +14,7 @@ import { GraphQLSchemaBuilder } from './graphql-schema-builder';
 import { GqlModuleOptions } from './interfaces';
 import { ScalarsExplorerService, DelegatesExplorerService, ResolversExplorerService } from './services';
 import { extend, removeTempField } from './utils';
+import { loadPackage } from '@nestjs/common/utils/load-package.util';
 
 @Injectable()
 export class GraphQLFactory {
@@ -42,6 +43,7 @@ export class GraphQLFactory {
         options.buildSchemaOptions,
         this.resolversExplorerService.getAllCtors(),
       );
+      const { printSchema } = loadPackage('@apollo/federation', 'ApolloFederation');
       const executableSchema = makeExecutableSchema({
         resolvers: extend(typesResolvers, options.resolvers),
         typeDefs: gql`
